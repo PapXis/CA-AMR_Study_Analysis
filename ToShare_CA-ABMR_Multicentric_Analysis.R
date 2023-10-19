@@ -293,7 +293,7 @@ custom_dec_path <- pathdata.custom.p$less # Identify Pathways with decreased exp
 ### Cell type analysis
 
 # Import custom cell type definitions
-celllist <- readRDS("custom_pathways.rds")
+celllist <- readRDS("custom_celltypes.rds")
 celldata.custom.p <- gage(pathdata, # Perform Pathway analysis
                           gsets = celllist,
                           ref = hn,
