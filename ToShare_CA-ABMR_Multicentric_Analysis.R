@@ -1,13 +1,14 @@
 ############### NANOSTRING NORMALIZATION AND ANALYSIS PIPELINE ################
 
 # Place this R script in the analysis folder.
-# This folder should contain:
-#   a) an annotation file named "clinicallabels.csv" reporting sample names as rownames 
+# This folder should also contain:
+#   a) a "Normalization_Folder" subfolder containing all RCC files
+#   b) an annotation file named "clinicallabels.csv" reporting sample names as rownames 
 #      and other additional columns for the study group and the batch label
-#   b) a file called "BHOT_entrez_mapping.csv" including the BHOT panel entrezIDs list
-#   c) a file called "custom_pathways.rds"
-#   d) a file called "custom_celltypes.rds"
-#   d) a "Normalization_Folder" subfolder containing all RCC files
+#   c) a file called "BHOT_entrez_mapping.csv" including the BHOT panel entrezIDs list
+#   d) a file called "custom_pathways.rds" reporting the used custom pathway definitions
+#   e) a file called "custom_celltypes.rds" reporting the used custom cell type definitions
+#   
 
 ######## LOAD OR INSTALL NECESSARY PACKAGES ########
 
@@ -38,7 +39,7 @@ pacman::p_load(MASS,
 
 ######## DATA IMPORT AND PREPROCESSING ########
 
-# Set Working Directory to folder of the script
+# Set Working Directory to analysis folder
 setwd(dirname(getActiveDocumentContext()$path))
 
 # Import Annotations File
@@ -53,14 +54,14 @@ raw <- rcc_files$raw %>% # Import raw counts
 
 p_data <- NanoStringQC(rcc_files$raw, rcc_files$exp) %>% # Import Patient Data
   column_to_rownames(var = "File.Name")
-# Column Name has to match SampleID as in the annotation file loaded later
+# Row Name has to match SampleID as in the annotation file loaded later
 
 f_data <- rcc_files$raw %>% # Import probeset information
   select(c("Name", "Code.Class", "Accession")) %>%
   column_to_rownames(var = "Name")
 colnames(f_data)[1] <- "Class"
 
-# Filter annotations file and add information from the annotations file in p_data
+# Filter annotations file and add information from the annotations file to p_data
 
 clin_lab <- clin_lab[row.names(clin_lab) %in% row.names(p_data),] # Filter only samples that are also present in the dataset
 p_data$Group <- clin_lab$Group # Adds study group labels to p_data for HK association test
@@ -99,7 +100,7 @@ lod <- colMeans(neg_raw) - apply(neg_raw, 2, sd) # Calculate LOD
 num_endogenous_blod <- colSums(raw[f_data$Class == "Endogenous", ] < lod) # Count endogenous genes per sample below LOD
 num_hk_blod <- colSums(raw[f_data$Class == "Housekeeping", ] < lod) # Count housekeeping genes per sample below LOD
 
-# Remove unwanted samples by selecting number of housekeeping genes below lod to dump the sample
+# Remove unwanted samples by selecting number of housekeeping genes below LOD to dump the sample
 raw <- raw[, ! (colnames(raw) %in% names(num_hk_blod[num_hk_blod > 7]))] # Remove from raw counts
 p_data <- p_data[!(rownames(p_data) %in% names(num_hk_blod[num_hk_blod > 7])), ] # Remove from p_data
 clin_lab <- clin_lab[!(row.names(clin_lab) %in% names(num_hk_blod[num_hk_blod > 7])), ] # Remove from annotations
@@ -109,17 +110,18 @@ raw <- raw[rownames(f_data[f_data$Class != "Positive" & f_data$Class != "Negativ
 f_data <- f_data[f_data$Class != "Positive" & f_data$Class != "Negative",]
 
 #### Eventually remove samples following post-normalization/visualization ####
-# Try to start conservative and drop after visualizing.
+# Try to start conservatively and drop after visualizing.
 
 ######## NORMALIZATION ########
 
-# Iteratively try tuning k, removing flagged samples, and changing the control genes
+# Iteratively try tuning k, removing flagged samples, and changing the HK genes
 # Use visualization to achieve optimal results
 # Look at expression heatmaps and see if things look odd on the genes correlation level
 # Work with LOD flags and HK genes to normalize as well as possible.
 
 k <- 1 # Try with k values ranging from 1 to 5
-norm_dat <- RUV_total(raw, p_data, f_data, k = k) # In the iterative process, run this line substituting raw to renormalize
+norm_dat <- RUV_total(raw, p_data, f_data, k = k) # In the iterative process, run this line substituting raw to renormalize. Also, run the line extracting log norm counts little below
+
 
 # Visualize relative log expression and color code on known sources of technical variation
 # to make decisions about samples or k
@@ -172,11 +174,11 @@ ggplotly(autoplot(pca_test_nn,
 
 pca_test <- prcomp(t(log_norm_counts), scale. = T)
 #pca_test[["scale"]] <- FALSE # Optional
-ggplotly(autoplot(pca_test,
+ggplotly(autoplot(pca_test, # Batch labeled
                   data = clin_lab,
                   colour = "Batch",
                   label = F))
-ggplotly(autoplot(pca_test,
+ggplotly(autoplot(pca_test, # Study group labeled
                   data = clin_lab,
                   colour = "Group",
                   label = F))
@@ -205,7 +207,7 @@ raw <- assay(dds)
 ## Step 4: Identify empirical control genes. Tweak the lfc and padj thresholds to taste
 nondegs <- as.data.frame(results(dds,contrast = c('Group','positive','negative'), altHypothesis = "lessAbs",
                                  lfcThreshold=0.6)) # Performs 1st line DEG analysis with differential expression as null hypothesis to identify genes with equal expression
-empirical <- rownames(nondegs[nondegs$padj < 0.05 & !(is.na(nondegs$padj)),])
+empirical <- rownames(nondegs[nondegs$padj < 0.05 & !(is.na(nondegs$padj)),]) # Filters significantly non-differentially expressed genes to use them as empirical control genes
 # Changes the gene class of the newly selected HK genes to HK
 c_idx <- unique(c(c_idx, empirical))
 f_data[row.names(f_data) %in% empirical & f_data$Class == "Endogenous",]$Class <- "Housekeeping"
@@ -241,13 +243,13 @@ topDEGs <- as.data.frame(resDEG) %>%
 topDEGs <- topDEGs[1:15,]
 exp_topDEGs <- t(log_norm_counts[rownames(log_norm_counts) %in% rownames(topDEGs),]) # Extract Most differentilly expressd genes
 PCAtest_top15 <- prcomp(exp_topDEGs, scale.= T) # Perform PCA. Try to change "scale." to see the effect on the plot
-ggplotly(autoplot(PCAtest_top15, # Generate the plot
+ggplotly(autoplot(PCAtest_top15, # Generate the group-labeled plot
                   data = clin_lab,
                   colour = "Group",
                   label = F,
                   main = "Principal Component Analysis",
                   hjust = 0.5))
-ggplotly(autoplot(PCAtest_top15, # Generate the plot
+ggplotly(autoplot(PCAtest_top15, # Generate the batch-labeled plot
                   data = clin_lab,
                   colour = "Batch",
                   label = F))
